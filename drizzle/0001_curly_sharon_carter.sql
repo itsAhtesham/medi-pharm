@@ -1,0 +1,2 @@
+ALTER TABLE "purchases" DROP CONSTRAINT "supply_valid";--> statement-breakpoint
+ALTER TABLE "purchases" ADD CONSTRAINT "supply_valid" CHECK (not "purchases"."reminder_enabled" or ("purchases"."supply_days" is not null and "purchases"."supply_start" is not null and "purchases"."run_out_date" is not null and "purchases"."supply_days" between 1 and 365 and "purchases"."supply_start" >= "purchases"."purchase_date" and "purchases"."run_out_date" = "purchases"."supply_start" + "purchases"."supply_days"));

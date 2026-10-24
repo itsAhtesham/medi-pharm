@@ -1,0 +1,43 @@
+name: Application checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: medi_pharm
+          POSTGRES_PASSWORD: ci_test_only
+          POSTGRES_DB: medi_pharm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medi_pharm -d medi_pharm_test"
+          --health-interval 3s --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://medi_pharm:ci_test_only@127.0.0.1:5432/medi_pharm_test
+      DATABASE_URL: postgresql://medi_pharm:ci_test_only@127.0.0.1:5432/medi_pharm_test
+      JWT_SECRET: ci-only-signing-secret-never-deploy-123456789
+      RATE_LIMIT_SECRET: ci-only-limiter-secret-never-deploy-123456789
+      APP_URL: http://127.0.0.1:3100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e
+        env:
+          E2E_PRODUCTION: '1'
