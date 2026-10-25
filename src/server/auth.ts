@@ -46,7 +46,19 @@ export async function verifyToken(token: string): Promise<Actor | null> {
   return row ?? null;
 }
 let dummyHash: Promise<string> | undefined;
-export async function login(rawEmail: string, rawPassword: string, ip: string) {
+export type LoginStage =
+  | 'configuration'
+  | 'rate_limit'
+  | 'user_lookup'
+  | 'password_verification'
+  | 'session_creation'
+  | 'token_signing';
+export async function login(
+  rawEmail: string,
+  rawPassword: string,
+  ip: string,
+  onStage?: (stage: LoginStage) => void,
+) {
   const normalized = email.safeParse(rawEmail);
   if (
     !normalized.success ||
@@ -54,16 +66,21 @@ export async function login(rawEmail: string, rawPassword: string, ip: string) {
     Array.from(rawPassword).length > 128
   )
     throw new AppError('Email or password is incorrect.', 'LOGIN');
+  onStage?.('configuration');
+  // Validate signing configuration before writing a session that cannot be used.
+  const signingSecret = secret('JWT_SECRET');
+  const rateLimitSecret = secret('RATE_LIMIT_SECRET');
   const keys = [
     ['email:' + normalized.data, 5],
     ['ip:' + ip, 30],
   ] as const;
   const limiter = keys
     .map(([v, limit]) => ({
-      key: createHmac('sha256', secret('RATE_LIMIT_SECRET')).update(v).digest('hex'),
+      key: createHmac('sha256', rateLimitSecret).update(v).digest('hex'),
       limit,
     }))
     .sort((a, b) => a.key.localeCompare(b.key));
+  onStage?.('rate_limit');
   const allowed = await db.transaction(async (tx) => {
     let ok = true;
     for (const { key, limit } of limiter) {
@@ -91,7 +108,9 @@ export async function login(rawEmail: string, rawPassword: string, ip: string) {
     return ok;
   });
   if (!allowed) throw new AppError('Too many attempts. Try again in 15 minutes.', 'RATE_LIMIT');
+  onStage?.('user_lookup');
   const [user] = await db.select().from(users).where(eq(users.email, normalized.data));
+  onStage?.('password_verification');
   dummyHash ??= hash('unused-dummy-password-' + randomUUID(), {
     memoryCost: 19456,
     timeCost: 2,
@@ -103,6 +122,7 @@ export async function login(rawEmail: string, rawPassword: string, ip: string) {
   if (!user || !user.isActive || !matches)
     throw new AppError('Email or password is incorrect.', 'LOGIN');
   const expiresAt = new Date(Date.now() + 8 * 3600000);
+  onStage?.('session_creation');
   const session = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(users).where(eq(users.id, user.id)).for('update');
     ensure(
@@ -116,6 +136,7 @@ export async function login(rawEmail: string, rawPassword: string, ip: string) {
       .where(eq(authRateLimits.key, limiter.find((k) => k.limit === 5)!.key));
     return s;
   });
+  onStage?.('token_signing');
   const token = await new SignJWT({ sid: session.id })
     .setProtectedHeader({ alg: 'HS256' })
     .setSubject(user.id)
@@ -123,7 +144,7 @@ export async function login(rawEmail: string, rawPassword: string, ip: string) {
     .setAudience(audience)
     .setIssuedAt()
     .setExpirationTime(Math.floor(expiresAt.getTime() / 1000))
-    .sign(new TextEncoder().encode(secret('JWT_SECRET')));
+    .sign(new TextEncoder().encode(signingSecret));
   return { token, expiresAt, userId: user.id };
 }
 export async function revokeSession(a: Actor) {
